@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `OwnedView<V>` gains a `reborrow<'b>(&'b self) -> &'b V::Reborrowed<'b>` method
+  that makes the internal `'static` lifetime visible as `'b` (the lifetime of the
+  borrow), so view fields can be passed into functions or return types bounded by
+  the `OwnedView`'s lifetime. Requires `V: ViewReborrow`, a safe trait whose
+  `reborrow` method body is a covariance-checked subtype coercion; codegen emits
+  the `impl` automatically for every generated view type. Hand-written view types
+  opt in with `impl ViewReborrow for MyView<'static> { type Reborrowed<'b> =
+  MyView<'b>; fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> { this } }`
+  — the body fails to compile for invariant view types, so no `unsafe` is needed.
+  ([#82](https://github.com/anthropics/buffa/issues/82))
+
 - Codegen now emits "natural-path" `pub use` re-exports for ancillary types
   (views, oneof enums, view-of-oneof enums, file-level extension consts,
   `register_types`) at the module path you'd write first — `pkg::FooView`,
