@@ -46,6 +46,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- `buffa-types --features arbitrary` now compiles. `Any.value` is
+  `bytes::Bytes` (since 0.4.0 / #51), which has no `Arbitrary` impl.
+  Codegen now emits `#[arbitrary(with = ::buffa::__private::arbitrary_bytes*)]`
+  on every `bytes_fields`-typed field — singular, optional, and repeated
+  struct fields plus oneof variant inner fields — when
+  `generate_arbitrary = true`, so the struct-level `derive(Arbitrary)`
+  succeeds. Map values are unaffected (they are always `Vec<u8>` regardless
+  of `bytes_fields`). The same fix covers any user crate that uses
+  `bytes_fields` + `generate_arbitrary`. `cargo doc --workspace
+  --all-features` and `cargo clippy --workspace --all-features` are also
+  unblocked, and CI now runs `cargo check --workspace --all-features` to
+  prevent recurrence.
+  ([#88](https://github.com/anthropics/buffa/issues/88))
+
 - `write_to` now emits fields in ascending field-number order regardless of
   cardinality (singular / repeated / map / oneof), matching prost,
   protoc-C++, and the spec's serialize-in-field-order recommendation.
