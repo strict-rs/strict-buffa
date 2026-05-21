@@ -210,3 +210,61 @@ fn which_oneof_resolves_set_member() {
     assert_eq!(active.number(), 1);
     assert_eq!(active.name(), "num");
 }
+
+#[test]
+fn unknown_fields_reachable_through_dyn_reflect_message() {
+    // The PII-interceptor case: a recursive walk over `&dyn ReflectMessage`
+    // must be able to reach the unknown fields of *nested* messages, not
+    // just the root. `unknown_fields()` is on the trait for exactly this.
+    use buffa::{UnknownFieldData, UnknownFields};
+
+    let p = pool();
+    let containers_idx = p.message_index("reflect.test.Containers").unwrap();
+    let inner_idx = p.message_index("reflect.test.Inner").unwrap();
+    let md = p.message_by_name("reflect.test.Containers").unwrap();
+
+    // Build an Inner whose wire bytes carry a field its descriptor doesn't
+    // declare (number 99, a string), then nest it in a Containers.
+    let mut inner = DynamicMessage::new(Arc::clone(&p), inner_idx);
+    inner.set(
+        p.message(inner_idx).field(1).unwrap(),
+        Value::String("known".into()),
+    );
+    let mut inner_bytes = inner.encode_to_vec();
+    buffa::encoding::Tag::new(99, buffa::encoding::WireType::LengthDelimited)
+        .encode(&mut inner_bytes);
+    buffa::encoding::encode_varint(11, &mut inner_bytes);
+    inner_bytes.extend_from_slice(b"555-12-3456");
+    let inner_with_unknown =
+        DynamicMessage::decode(Arc::clone(&p), inner_idx, &inner_bytes).unwrap();
+    assert_eq!(inner_with_unknown.unknown_fields().len(), 1);
+
+    let mut outer = DynamicMessage::new(Arc::clone(&p), containers_idx);
+    outer.set(md.field(5).unwrap(), Value::Message(inner_with_unknown));
+
+    // Walk through the trait object only — the way a generic interceptor
+    // sees the message — and collect every length-delimited unknown payload
+    // at any depth.
+    fn collect_unknown_strings(msg: &dyn ReflectMessage, out: &mut Vec<String>) {
+        for uf in msg.unknown_fields().iter() {
+            if let UnknownFieldData::LengthDelimited(b) = &uf.data {
+                if let Ok(s) = core::str::from_utf8(b) {
+                    out.push(s.to_owned());
+                }
+            }
+        }
+        msg.for_each_set(&mut |_, v| {
+            if let buffa_descriptor::reflect::ValueRef::Message(cow) = v {
+                collect_unknown_strings(&*cow, out);
+            }
+        });
+    }
+    let mut found = Vec::new();
+    collect_unknown_strings(&outer, &mut found);
+    assert_eq!(found, vec!["555-12-3456".to_string()]);
+
+    // The root itself has no unknown fields — only the nested Inner does —
+    // so a non-recursive check would have missed the payload entirely.
+    assert!(ReflectMessage::unknown_fields(&outer).is_empty());
+    let _: &UnknownFields = outer.unknown_fields();
+}

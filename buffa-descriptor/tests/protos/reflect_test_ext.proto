@@ -1,0 +1,39 @@
+// Extension reflection test fixtures. Proto2 because extending a regular
+// message is a proto2-only feature (proto3 extensions are limited to
+// custom options).
+syntax = "proto2";
+
+package reflect.ext;
+
+message Extendable {
+  optional int32 declared = 1;
+  extensions 100 to 199;
+}
+
+// File-level extensions, registered as `reflect.ext.<name>`.
+extend Extendable {
+  optional int32 ext_int32 = 100;
+  optional string ext_string = 101;
+  repeated int32 ext_repeated = 102;
+  optional Payload ext_message = 103;
+}
+
+// Message-scoped extension, registered as `reflect.ext.Scope.ext_nested`.
+message Scope {
+  extend Extendable {
+    optional int64 ext_nested = 110;
+  }
+}
+
+// Group-typed extension: groups use StartGroup/EndGroup wire framing
+// instead of length-delimited, exercising the delimited-encoding path
+// through extension resolution.
+extend Extendable {
+  optional group ExtGroup = 120 {
+    optional int32 inner = 1;
+  }
+}
+
+message Payload {
+  optional string data = 1;
+}

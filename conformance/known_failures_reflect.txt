@@ -1,7 +1,3 @@
 # Known failures for the BUFFA_VIA_REFLECT mode.
 #
-# proto2 extension JSON keys (`[pkg.ext]`) are not supported by the
-# reflect deserializer — extensions are not yet part of the linked
-# descriptor model (the pool does not register them and the codec has
-# no field descriptor to resolve the key against).
-Recommended.Proto2.JsonInput.FieldNameExtension.Validator
+# (Currently empty.)

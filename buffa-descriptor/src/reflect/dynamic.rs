@@ -116,6 +116,33 @@ impl DynamicMessage {
         self.msg_idx
     }
 
+    /// Resolve `number` to a declared field of this message, or — when it
+    /// isn't one — to a registered extension of this message.
+    ///
+    /// This is the lookup every codec path uses to interpret a stored or
+    /// incoming field number. Extensions resolve to the [`FieldDescriptor`]
+    /// inside their [`ExtensionDescriptor`](crate::ExtensionDescriptor), so
+    /// the caller treats them identically to declared fields.
+    ///
+    /// Cost: the declared-field binary search covers the overwhelmingly
+    /// common case. The pool's extension index is only consulted when the
+    /// extendee declares at least one extension range *and* the number falls
+    /// inside it — `in_extension_range` short-circuits on the empty slice
+    /// that proto3 messages and most proto2 messages have.
+    fn field_or_extension(&self, number: u32) -> Option<&FieldDescriptor> {
+        let md = self.message_descriptor();
+        if let Some(fd) = md.field(number) {
+            return Some(fd);
+        }
+        if md.in_extension_range(number) {
+            return self
+                .pool
+                .extension_for(self.msg_idx, number)
+                .map(crate::ExtensionDescriptor::field);
+        }
+        None
+    }
+
     /// Decode wire bytes against the descriptor.
     ///
     /// # Errors
@@ -178,7 +205,11 @@ impl DynamicMessage {
         // Take the FieldDescriptor by index to avoid borrowing the
         // MessageDescriptor (which lives behind self.pool) across the
         // mutation of self.fields. Extract the small `Copy` parts we need.
-        let (kind, oneof_index, delimited) = match self.message_descriptor().field(number) {
+        // A number that isn't a declared field may be a registered extension
+        // — resolve it through the pool so it decodes typed (and can be
+        // re-emitted as JSON). Unregistered extension-range numbers fall
+        // through to unknown fields, preserving the binary round-trip.
+        let (kind, oneof_index, delimited) = match self.field_or_extension(number) {
             Some(fd) => (fd.kind, fd.oneof_index, fd.delimited),
             None => {
                 self.unknown.push(decode_unknown_field(tag, buf, depth)?);
@@ -466,9 +497,10 @@ impl DynamicMessage {
     /// Encode this message into `buf`.
     pub fn encode(&self, buf: &mut impl BufMut) {
         for (&number, value) in &self.fields {
-            // Skip if the descriptor doesn't recognize this number anymore
-            // (defensive — fields map should be in sync with descriptor).
-            if let Some(fd) = self.message_descriptor().field(number) {
+            // Skip if neither the descriptor nor the extension index
+            // recognizes this number anymore (defensive — the fields map
+            // should be in sync with the descriptor).
+            if let Some(fd) = self.field_or_extension(number) {
                 if should_skip_on_encode(fd, value) {
                     continue;
                 }
@@ -491,7 +523,7 @@ impl DynamicMessage {
     pub fn encoded_len(&self) -> usize {
         let mut len = self.unknown.encoded_len();
         for (&number, value) in &self.fields {
-            if let Some(fd) = self.message_descriptor().field(number) {
+            if let Some(fd) = self.field_or_extension(number) {
                 if should_skip_on_encode(fd, value) {
                     continue;
                 }
@@ -568,13 +600,13 @@ impl ReflectMessage for DynamicMessage {
     }
 
     fn get(&self, field: &FieldDescriptor) -> ValueRef<'_> {
-        // The descriptor must belong to this message — looking up by
-        // `field.number` against a foreign descriptor with a colliding
-        // number would silently return the wrong value, which is worse than
-        // a panic. The check is debug-only because `get` is the hot path.
+        // The descriptor must belong to this message (a declared field or a
+        // registered extension of it) — looking up by `field.number` against
+        // a foreign descriptor with a colliding number would silently return
+        // the wrong value, which is worse than a panic. The check is
+        // debug-only because `get` is the hot path.
         debug_assert!(
-            self.message_descriptor()
-                .field(field.number)
+            self.field_or_extension(field.number)
                 .is_some_and(|f| core::ptr::eq(f, field)),
             "FieldDescriptor passed to get() is not a member of {}",
             self.message_descriptor().full_name,
@@ -603,14 +635,22 @@ impl ReflectMessage for DynamicMessage {
     }
 
     fn for_each_set(&self, f: &mut dyn FnMut(&FieldDescriptor, ValueRef<'_>)) {
+        // Extensions present on this message are visited alongside declared
+        // fields, matching protobuf-go's `Message.Range`. Callers that need
+        // to distinguish can check `message_descriptor().field(fd.number())`
+        // — `None` means the descriptor came from the extension index.
         for (&number, value) in &self.fields {
-            if let Some(fd) = self.message_descriptor().field(number) {
+            if let Some(fd) = self.field_or_extension(number) {
                 if !self.has(fd) {
                     continue;
                 }
                 f(fd, value.as_ref());
             }
         }
+    }
+
+    fn unknown_fields(&self) -> &buffa::UnknownFields {
+        &self.unknown
     }
 
     fn to_dynamic(&self) -> DynamicMessage {

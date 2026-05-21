@@ -344,3 +344,53 @@ shared WKT formatting helpers (Timestamp RFC 3339, Duration, FieldMask
 camelCase) between the typed `buffa-types` JSON impls and the reflective
 `json_wkt.rs` codecs is a separate cleanup that should land before 0.7.0
 ships, since drift between them is a user-visible inconsistency.
+
+## Extension reflection (2026-05-21)
+
+Extensions were originally deferred to "phase 4" alongside the registry
+work. They were pulled forward into 0.7.0 because a reflection API that
+can't see proto2 extensions invites "why not?" questions, and the narrow
+slice needed — extensions in the pool plus `DynamicMessage` round-trip —
+is self-contained.
+
+### Model comparison
+
+| | protobuf-go | protobuf-es | buffa typed path | buffa `DynamicMessage` |
+|---|---|---|---|---|
+| Descriptor | `ExtensionDescriptor` *is* a `FieldDescriptor` | `DescExtension`, own kind | `JsonExtEntry` (no descriptor, fn pointers) | `ExtensionDescriptor` *contains* a `FieldDescriptor` |
+| Storage | Typed extension map by number | Unknown fields, lazily decoded | Unknown fields, decoded via registered codecs | Same `BTreeMap<u32, Value>` as declared fields |
+| Access | `Get`/`Set`/`Range` accept extension descriptors | Free functions `getExtension(msg, ext)` | `msg.get_extension(&EXT)` | `msg.get(ext.field())` — unchanged trait |
+
+`DynamicMessage` follows protobuf-go: extension values live in the same
+per-number map as declared fields (extension numbers can't collide with
+declared numbers — they occupy reserved ranges), and the `ReflectMessage`
+trait is unchanged because its accessors already key on `field.number`.
+The protobuf-es lazy-decode-from-unknown-fields model — which buffa's
+*typed* path uses — is the right call when the message representation is
+fixed (a generated struct, a plain JS object) and can't grow a member per
+extension. For a message that is already a dynamic map, it would mean
+re-decoding wire bytes on every `get` and would break `ValueRef`'s
+borrowing model.
+
+### What was added
+
+- `ExtensionDescriptor` / `ExtensionIndex` in `desc.rs`.
+- Pool pass 3 links file-level and message-scoped extensions (reusing
+  `link_field`), validates the number falls in the extendee's declared
+  extension range, and indexes by full name and by `(extendee, number)`.
+- `field_or_extension(number)` on `DynamicMessage` — the single lookup
+  every codec path (decode, encode, `for_each_set`, JSON) uses to resolve
+  a number to a descriptor. Unregistered extension-range numbers still
+  fall through to unknown fields, preserving the binary round-trip.
+- JSON: `"[pkg.ext]"` keys resolve through `extension_by_name` on parse
+  (with extendee validation) and extensions serialize after declared
+  fields with bracketed full names.
+
+### Out of scope
+
+- **MessageSet JSON.** The items-group wire encoding doesn't match the
+  extension's registered field number, so MessageSet extensions stay in
+  unknown fields. Not in the JSON spec; binary round-trip unaffected.
+- **Interop with the typed `ExtensionRegistry`.** Parallel systems for
+  parallel storage models, the same way `DescriptorPool` doesn't interop
+  with generated `MessageName` impls.

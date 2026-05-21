@@ -55,6 +55,18 @@ impl Serialize for DynamicMessage {
                 .expect("has() ⇒ field is present");
             map.serialize_entry(&fd.json_name, &FieldRef::new(self.pool(), fd, value))?;
         }
+        // Extensions present on this message serialize after the declared
+        // fields as `"[full.name]": value`, per the proto2 JSON convention.
+        for ext in self.pool().extensions_of(self.message_index()) {
+            let fd = ext.field();
+            if !self.has(fd) {
+                continue;
+            }
+            let value = self
+                .field_by_number(fd.number)
+                .expect("has() ⇒ field is present");
+            map.serialize_entry(ext.json_key(), &FieldRef::new(self.pool(), fd, value))?;
+        }
         map.end()
     }
 }
@@ -356,9 +368,28 @@ impl<'de> Visitor<'de> for MessageVisitor {
         while let Some(key) = map.next_key::<String>()? {
             // The proto3 JSON spec says parsers must accept both the camelCase
             // json_name and the original proto field name. `field_by_name`
-            // indexes both.
+            // indexes both. A `"[pkg.ext]"` key names an extension of this
+            // message, registered in the pool by its bracketed full name.
             let md = self.pool.message(self.msg_idx);
-            let fd = md.field_by_name(&key);
+            let fd = if let Some(ext_name) = key.strip_prefix('[').and_then(|k| k.strip_suffix(']'))
+            {
+                match self.pool.extension_by_name(ext_name) {
+                    Some(ext) if ext.extendee() == self.msg_idx => Some(ext.field()),
+                    Some(ext) => {
+                        return Err(de::Error::custom(format!(
+                            "extension {:?} extends {}, not {}",
+                            ext.full_name(),
+                            self.pool.message(ext.extendee()).full_name,
+                            md.full_name
+                        )));
+                    }
+                    // Unregistered extension → same unknown-field handling
+                    // as an unrecognized plain key.
+                    None => None,
+                }
+            } else {
+                md.field_by_name(&key)
+            };
             let Some(fd) = fd else {
                 // Unknown field — error per the spec, unless the caller
                 // opted into lenient parsing. Note that this `continue`
@@ -431,8 +462,14 @@ impl<'de> Visitor<'de> for MessageVisitor {
                         }
                     }
                 }
+                // Re-resolve the descriptor by number (the `fd` borrow was
+                // released before `next_value_seed` mutated `msg`). The
+                // declared-field lookup misses extension numbers, so fall
+                // back to the pool's extension index.
                 if let Some(fd) = self.pool.message(self.msg_idx).field(number) {
                     msg.set(fd, v);
+                } else if let Some(ext) = self.pool.extension_for(self.msg_idx, number) {
+                    msg.set(ext.field(), v);
                 }
             }
         }

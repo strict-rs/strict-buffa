@@ -15,8 +15,14 @@ pub struct UnknownFields {
 
 impl UnknownFields {
     /// Creates an empty set of unknown fields.
-    pub fn new() -> Self {
-        Self::default()
+    ///
+    /// `const` so an empty set can be a `static` (e.g. the default
+    /// [`ReflectMessage::unknown_fields`] return value for implementations
+    /// that don't preserve unknown fields).
+    ///
+    /// [`ReflectMessage::unknown_fields`]: https://docs.rs/buffa-descriptor/latest/buffa_descriptor/reflect/trait.ReflectMessage.html#method.unknown_fields
+    pub const fn new() -> Self {
+        Self { fields: Vec::new() }
     }
 
     /// Returns `true` if no unknown fields have been recorded.

@@ -66,9 +66,32 @@ pub trait ReflectMessage {
     /// Visit every set field.
     ///
     /// "Set" follows the same semantics as [`Self::has`]. **Unknown fields
-    /// are excluded** — they have no `FieldDescriptor`. Access them through
-    /// the implementation's own surface (e.g. `DynamicMessage::unknown_fields`).
+    /// are excluded** — they have no `FieldDescriptor`. Visit them
+    /// separately via [`unknown_fields()`](Self::unknown_fields).
     fn for_each_set(&self, f: &mut dyn FnMut(&FieldDescriptor, ValueRef<'_>));
+
+    /// The fields preserved from decode that the message's descriptor does
+    /// not recognize.
+    ///
+    /// An unknown field carries only its field number and wire-level value
+    /// (varint / fixed32 / fixed64 / length-delimited / group) — there is no
+    /// descriptor, so no name and no proto type. A length-delimited payload
+    /// is indistinguishably a string, a bytes field, a nested message, or a
+    /// packed repeated scalar.
+    ///
+    /// This is on the trait (mirroring protobuf-go's `Message.GetUnknown`)
+    /// so a recursive walk over `&dyn ReflectMessage` — an interceptor
+    /// scanning every string in a request, a generic redactor — can reach
+    /// the unknown fields of *nested* messages, not just the root. A walk
+    /// that only visits [`for_each_set`](Self::for_each_set) silently skips
+    /// any field added by a schema revision newer than this pool's.
+    ///
+    /// The default implementation returns an empty set, for implementations
+    /// that do not preserve unknown fields.
+    fn unknown_fields(&self) -> &buffa::UnknownFields {
+        static EMPTY: buffa::UnknownFields = buffa::UnknownFields::new();
+        &EMPTY
+    }
 
     /// Which member of `oneof` is set, if any.
     ///

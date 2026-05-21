@@ -243,3 +243,59 @@ fn service_descriptor_links() {
     let idx = p.service_index("reflect.test.Demo").expect("indexed");
     assert_eq!(p.service(idx).full_name(), "reflect.test.Demo");
 }
+
+#[test]
+fn extensions_link() {
+    let p = pool();
+    let extendable = p.message_index("reflect.ext.Extendable").unwrap();
+
+    // File-level extension, registered under the package.
+    let ext = p
+        .extension_by_name("reflect.ext.ext_int32")
+        .expect("file-level extension registered");
+    assert_eq!(ext.full_name(), "reflect.ext.ext_int32");
+    assert_eq!(ext.extendee(), extendable);
+    assert_eq!(ext.field().name(), "ext_int32");
+    assert_eq!(ext.field().number(), 100);
+    assert_eq!(
+        ext.field().kind(),
+        FieldKind::Singular(SingularKind::Scalar(ScalarType::Int32))
+    );
+    // proto2 optional → explicit presence.
+    assert_eq!(ext.field().presence(), FieldPresence::Explicit);
+
+    // Repeated extension.
+    let rep = p.extension_by_name("reflect.ext.ext_repeated").unwrap();
+    assert_eq!(
+        rep.field().kind(),
+        FieldKind::List(SingularKind::Scalar(ScalarType::Int32))
+    );
+
+    // Message-typed extension resolves its value type.
+    let payload = p.message_index("reflect.ext.Payload").unwrap();
+    let msg_ext = p.extension_by_name("reflect.ext.ext_message").unwrap();
+    assert_eq!(
+        msg_ext.field().kind(),
+        FieldKind::Singular(SingularKind::Message(payload))
+    );
+
+    // Message-scoped extension is registered under the declaring message.
+    let nested = p
+        .extension_by_name("reflect.ext.Scope.ext_nested")
+        .expect("message-scoped extension registered under its scope");
+    assert_eq!(nested.extendee(), extendable);
+    assert_eq!(nested.field().number(), 110);
+    assert!(p.extension_by_name("reflect.ext.ext_nested").is_none());
+
+    // (extendee, number) lookup and range iteration.
+    assert!(p.extension_for(extendable, 100).is_some());
+    assert!(p.extension_for(extendable, 99).is_none());
+    let all: Vec<u32> = p
+        .extensions_of(extendable)
+        .map(|e| e.field().number())
+        .collect();
+    assert_eq!(all, vec![100, 101, 102, 103, 110, 120]);
+    // A message with no extensions yields nothing.
+    let inner = p.message_index("reflect.test.Inner").unwrap();
+    assert_eq!(p.extensions_of(inner).count(), 0);
+}

@@ -29,9 +29,9 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use crate::desc::{
-    EnumDescriptor, EnumIndex, EnumValueDescriptor, FieldDescriptor, FieldKind, MessageDescriptor,
-    MessageIndex, MethodDescriptor, OneofDescriptor, ScalarType, ServiceDescriptor, ServiceIndex,
-    SingularKind,
+    EnumDescriptor, EnumIndex, EnumValueDescriptor, ExtensionDescriptor, ExtensionIndex,
+    FieldDescriptor, FieldKind, MessageDescriptor, MessageIndex, MethodDescriptor, OneofDescriptor,
+    ScalarType, ServiceDescriptor, ServiceIndex, SingularKind,
 };
 use crate::features::{self, ResolvedFeatures};
 use crate::generated::descriptor::field_descriptor_proto::{Label, Type as ProtoType};
@@ -68,6 +68,10 @@ pub enum PoolError {
     /// A map entry message did not have exactly fields 1 (key) and 2 (value),
     /// or the key type is not a valid map key per the protobuf spec.
     MalformedMapEntry { message: String },
+    /// Two extensions claim the same field number on the same message.
+    /// protoc rejects this within one compilation unit, but it can arise
+    /// when merging independently-compiled `FileDescriptorSet`s.
+    DuplicateExtensionNumber { extendee: String, number: u32 },
 }
 
 impl core::fmt::Display for PoolError {
@@ -96,6 +100,12 @@ impl core::fmt::Display for PoolError {
             }
             Self::MalformedMapEntry { message } => {
                 write!(f, "malformed map entry message {message}")
+            }
+            Self::DuplicateExtensionNumber { extendee, number } => {
+                write!(
+                    f,
+                    "more than one extension claims field number {number} on {extendee}"
+                )
             }
         }
     }
@@ -140,12 +150,22 @@ pub struct DescriptorPool {
     enums: Vec<EnumDescriptor>,
     /// Linked service descriptors, indexed by [`ServiceIndex`].
     services: Vec<ServiceDescriptor>,
+    /// Linked extension descriptors, indexed by [`ExtensionIndex`].
+    extensions: Vec<ExtensionDescriptor>,
     /// FQN (no leading dot) → definition lookup.
     by_name: BTreeMap<String, Definition>,
     /// Service FQN (no leading dot) → index. Separate from `by_name`
     /// because `Definition` is `MessageIndex`-or-`EnumIndex` and services
     /// are linked in a single pass after types resolve.
     service_by_name: BTreeMap<String, ServiceIndex>,
+    /// Extension FQN (no leading dot) → index. The JSON-parse lookup for
+    /// `"[pkg.ext]"` keys.
+    extension_by_name: BTreeMap<String, ExtensionIndex>,
+    /// `(extendee, field number)` → index. The wire-decode and
+    /// JSON-serialize lookup ("this number on this message is which
+    /// extension?"), and the backing store for
+    /// [`extensions_of`](Self::extensions_of) via a range scan.
+    extension_by_extendee: BTreeMap<(MessageIndex, u32), ExtensionIndex>,
     /// Filename → index into `files`.
     file_by_name: BTreeMap<String, usize>,
 }
@@ -233,14 +253,26 @@ impl DescriptorPool {
         }
         debug_assert_eq!(linked, self.messages.len());
 
-        // Pass 3: link services. Services reference message types by name
-        // for their input/output, so they link after the type passes. There's
-        // no register/link split because services have no forward references
-        // to each other and carry no editions features that affect resolution.
+        // Pass 3: link services and extensions. Both reference message types
+        // by name (a service's method input/output, an extension's extendee
+        // and value type), so they link after the type passes. There's no
+        // register/link split because neither has forward references to its
+        // own kind.
         for file in &new_files {
             let pkg = file.package.as_deref().unwrap_or("");
+            let file_features = features::for_file(file);
             for svc in &file.service {
                 self.link_service(pkg, svc)?;
+            }
+            // File-level extensions: `extend Foo { ... }` at the top level.
+            for ext in &file.extension {
+                self.link_extension(pkg, ext, &file_features)?;
+            }
+            // Message-scoped extensions: `message Scope { extend Foo {...} }`,
+            // registered under `pkg.Scope.ext_name`. Recurses into nested
+            // messages.
+            for msg in &file.message_type {
+                self.link_nested_extensions(pkg, msg, &file_features)?;
             }
         }
 
@@ -367,6 +399,66 @@ impl DescriptorPool {
     pub fn service_index(&self, full_name: &str) -> Option<ServiceIndex> {
         let name = full_name.strip_prefix('.').unwrap_or(full_name);
         self.service_by_name.get(name).copied()
+    }
+
+    /// All linked extensions, in pool index order.
+    #[must_use]
+    pub fn extensions(&self) -> &[ExtensionDescriptor] {
+        &self.extensions
+    }
+
+    /// Look up an extension by its fully-qualified registration name
+    /// (`pkg.ext_name` for file-level, `pkg.Scope.ext_name` for one declared
+    /// inside a message). This is the JSON `"[...]"` key without the
+    /// brackets.
+    #[must_use]
+    pub fn extension_by_name(&self, full_name: &str) -> Option<&ExtensionDescriptor> {
+        let name = full_name.strip_prefix('.').unwrap_or(full_name);
+        let idx = self.extension_by_name.get(name)?;
+        self.extensions.get(idx.0 as usize)
+    }
+
+    /// Look up the extension that occupies field number `number` on
+    /// `extendee`, if one is registered.
+    ///
+    /// This is the wire-decode and JSON-serialize lookup: "this field number
+    /// is in `extendee`'s extension range — which extension is it?"
+    #[must_use]
+    pub fn extension_for(
+        &self,
+        extendee: MessageIndex,
+        number: u32,
+    ) -> Option<&ExtensionDescriptor> {
+        let idx = self.extension_by_extendee.get(&(extendee, number))?;
+        self.extensions.get(idx.0 as usize)
+    }
+
+    /// All registered extensions of `extendee`, in field-number order.
+    pub fn extensions_of(
+        &self,
+        extendee: MessageIndex,
+    ) -> impl Iterator<Item = &ExtensionDescriptor> {
+        self.extension_by_extendee
+            .range((extendee, 0)..=(extendee, u32::MAX))
+            .filter_map(|(_, idx)| self.extensions.get(idx.0 as usize))
+    }
+
+    /// The [`ExtensionIndex`] for a fully-qualified registration name, if
+    /// present.
+    #[must_use]
+    pub fn extension_index(&self, full_name: &str) -> Option<ExtensionIndex> {
+        let name = full_name.strip_prefix('.').unwrap_or(full_name);
+        self.extension_by_name.get(name).copied()
+    }
+
+    /// Look up an extension by its [`ExtensionIndex`].
+    ///
+    /// # Panics
+    ///
+    /// Same cross-pool hazard as [`Self::message`].
+    #[must_use]
+    pub fn extension(&self, idx: ExtensionIndex) -> &ExtensionDescriptor {
+        &self.extensions[idx.0 as usize]
     }
 
     /// The original `FileDescriptorProto`s the pool was built from.
@@ -532,7 +624,7 @@ impl DescriptorPool {
         let mut field_by_number: Vec<(u32, u16)> = Vec::with_capacity(field_count);
         let mut field_by_name: Vec<(String, u16)> = Vec::with_capacity(field_count * 2);
         for (i, f) in msg.field.iter().enumerate() {
-            let fd = self.link_field(&fqn, f, &msg_features, msg)?;
+            let fd = self.link_field(&fqn, f, &msg_features, Some(msg))?;
             let i16 = i as u16;
             // Wire up oneof membership.
             if let Some(oneof_idx) = fd.oneof_index {
@@ -691,6 +783,110 @@ impl DescriptorPool {
         Ok(())
     }
 
+    /// Link one extension declaration scoped under `scope_fqn` (the package
+    /// for file-level extensions, the declaring message's FQN for nested
+    /// ones).
+    fn link_extension(
+        &mut self,
+        scope_fqn: &str,
+        ext: &FieldDescriptorProto,
+        parent_features: &ResolvedFeatures,
+    ) -> Result<(), PoolError> {
+        let name = ext.name.as_deref().unwrap_or("");
+        let fqn = if scope_fqn.is_empty() {
+            name.to_string()
+        } else {
+            format!("{scope_fqn}.{name}")
+        };
+        // Protobuf has a single symbol space per scope: an extension cannot
+        // share an FQN with another extension, a message, an enum, or a
+        // service. A spec-compliant protoc enforces this; the input is no
+        // longer trusted to come from protoc.
+        if self.extension_by_name.contains_key(&fqn)
+            || self.by_name.contains_key(&fqn)
+            || self.service_by_name.contains_key(&fqn)
+        {
+            return Err(PoolError::DuplicateName(fqn));
+        }
+        let extendee = self.resolve_message_type_name(ext.extendee.as_deref(), &fqn)?;
+        // The field links exactly like a declared field. `containing_msg` is
+        // `None` because extensions cannot be map fields (a map requires a
+        // synthetic MapEntry message nested in the declaring message, which
+        // an `extend` block cannot contain).
+        let mut field = self.link_field(scope_fqn, ext, parent_features, None)?;
+        // Extensions cannot be oneof members. A malformed FieldDescriptorProto
+        // carrying `oneof_index` would otherwise make `set()` clear the
+        // *extendee's* declared oneof members (the index would be interpreted
+        // against the extendee's oneof table). Scrub rather than reject —
+        // there is exactly one valid interpretation of an extension's oneof
+        // membership, and it is "none".
+        field.oneof_index = None;
+        // Validate the number falls inside one of the extendee's declared
+        // extension ranges.
+        if !self.messages[extendee.0 as usize].in_extension_range(field.number) {
+            return Err(PoolError::InvalidFieldNumber {
+                field: fqn,
+                // `link_field` bounds the number to `MAX_FIELD_NUMBER`
+                // (2^29 - 1), which fits `i32`; saturate defensively anyway.
+                number: i32::try_from(field.number).unwrap_or(i32::MAX),
+            });
+        }
+        // Two extensions claiming the same field number on the same message
+        // is a conflict protoc rejects within one compilation unit but which
+        // can arise when merging independently-compiled FileDescriptorSets.
+        // Registering both would make one a phantom: resolvable by name but
+        // never used by the wire or JSON codecs.
+        if self
+            .extension_by_extendee
+            .contains_key(&(extendee, field.number))
+        {
+            return Err(PoolError::DuplicateExtensionNumber {
+                extendee: self.messages[extendee.0 as usize].full_name.clone(),
+                number: field.number,
+            });
+        }
+        let json_key = format!("[{fqn}]");
+        let idx = ExtensionIndex(
+            u32::try_from(self.extensions.len()).expect("pool extension count fits in u32"),
+        );
+        self.extension_by_name.insert(fqn.clone(), idx);
+        self.extension_by_extendee
+            .insert((extendee, field.number), idx);
+        self.extensions.push(ExtensionDescriptor {
+            field,
+            full_name: fqn,
+            json_key,
+            extendee,
+        });
+        Ok(())
+    }
+
+    /// Recursively link extensions declared inside `msg` and its nested
+    /// messages. A nested extension's registration name is scoped under the
+    /// declaring message: `pkg.Scope.ext_name`.
+    fn link_nested_extensions(
+        &mut self,
+        parent_fqn: &str,
+        msg: &DescriptorProto,
+        parent_features: &ResolvedFeatures,
+    ) -> Result<(), PoolError> {
+        let name = msg.name.as_deref().unwrap_or("");
+        let fqn = if parent_fqn.is_empty() {
+            name.to_string()
+        } else {
+            format!("{parent_fqn}.{name}")
+        };
+        let msg_features =
+            features::resolve_child(parent_features, features::message_features(msg));
+        for ext in &msg.extension {
+            self.link_extension(&fqn, ext, &msg_features)?;
+        }
+        for nested in &msg.nested_type {
+            self.link_nested_extensions(&fqn, nested, &msg_features)?;
+        }
+        Ok(())
+    }
+
     /// Resolve a method's `input_type`/`output_type` (a leading-dot FQN like
     /// `.my.pkg.Request`) to a [`MessageIndex`].
     fn resolve_message_type_name(
@@ -720,7 +916,7 @@ impl DescriptorPool {
         msg_fqn: &str,
         f: &FieldDescriptorProto,
         parent_features: &ResolvedFeatures,
-        containing_msg: &DescriptorProto,
+        containing_msg: Option<&DescriptorProto>,
     ) -> Result<FieldDescriptor, PoolError> {
         let name = f.name.clone().unwrap_or_default();
         let field_fqn = format!("{msg_fqn}.{name}");
@@ -739,10 +935,11 @@ impl DescriptorPool {
         // matters; the field descriptor only carries the index.
 
         // Detect map fields: repeated + message type + the message is a
-        // map_entry.
+        // map_entry. `containing_msg` is `None` for extensions, which cannot
+        // be map fields — the lookup is skipped entirely.
         let kind = if is_repeated {
             if let SingularKind::Message(midx) = element {
-                if let Some(entry) = self.find_map_entry(containing_msg, f) {
+                if let Some(entry) = containing_msg.and_then(|m| self.find_map_entry(m, f)) {
                     let (key_ty, value_kind) = self.resolve_map_entry(entry, &field_fqn)?;
                     // Map entry messages are synthetic — they're not real
                     // pool members for reflection purposes, but we leave

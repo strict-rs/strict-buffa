@@ -37,11 +37,17 @@ use crate::generated::descriptor::field_descriptor_proto::Type as ProtoType;
 use buffa::editions::{EnumType, FieldPresence};
 
 /// Index of a [`MessageDescriptor`] within its owning pool.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+///
+/// The `Ord` impl is an arbitrary but stable total order over one pool's
+/// indices (so they can key ordered collections); it is **not** a documented
+/// relationship to declaration or registration order. Comparing indices from
+/// different pools is meaningless (the same cross-pool hazard as
+/// `PartialEq`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MessageIndex(pub(crate) u32);
 
 /// Index of an [`EnumDescriptor`] within its owning pool.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EnumIndex(pub(crate) u32);
 
 /// Protobuf scalar field types.
@@ -510,6 +516,97 @@ impl MethodDescriptor {
     #[must_use]
     pub fn is_server_streaming(&self) -> bool {
         self.server_streaming
+    }
+}
+
+/// Pool-local index of a registered extension.
+///
+/// Same contract as [`MessageIndex`] / [`EnumIndex`]: stable for the
+/// lifetime of the pool, no cross-pool identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ExtensionIndex(pub(crate) u32);
+
+/// A linked extension descriptor.
+///
+/// An extension is a field declared *outside* the message it belongs to —
+/// `extend Foo { optional int32 bar = 100; }` adds field 100 to `Foo` from
+/// anywhere that can see `Foo`. Structurally it is a [`FieldDescriptor`]
+/// plus the identity of the message it extends and the fully-qualified name
+/// it is registered under.
+///
+/// The contained [`field()`](Self::field) descriptor is what the
+/// [`ReflectMessage`](crate::reflect::ReflectMessage) accessors take —
+/// `msg.get(ext.field())` reads an extension exactly like a declared field.
+/// This mirrors protobuf-go, where `ExtensionDescriptor` *is* a
+/// `FieldDescriptor` and the reflective accessors don't distinguish.
+///
+/// Constructed only by [`DescriptorPool`](crate::DescriptorPool); not
+/// constructible by downstream crates.
+#[derive(Clone, Debug)]
+pub struct ExtensionDescriptor {
+    /// The field this extension adds to the extendee. `name` is the
+    /// extension's simple name; `json_name` is derived but unused (the JSON
+    /// key for an extension is the bracketed [`full_name`](Self::full_name)).
+    pub(crate) field: FieldDescriptor,
+    /// Fully-qualified registration name, e.g. `pkg.ext_name` for a
+    /// file-level extension or `pkg.Scope.ext_name` for one declared inside
+    /// a message. This is what appears in JSON `"[...]"` keys.
+    pub(crate) full_name: String,
+    /// The bracketed JSON object key, `"[<full_name>]"`. Precomputed at link
+    /// time so the JSON serializer doesn't allocate it per message.
+    pub(crate) json_key: String,
+    /// The message this extension extends.
+    pub(crate) extendee: MessageIndex,
+}
+
+impl ExtensionDescriptor {
+    /// The field this extension adds to the extendee.
+    ///
+    /// Pass this to [`ReflectMessage`](crate::reflect::ReflectMessage)
+    /// accessors: `msg.get(ext.field())`, `msg.has(ext.field())`,
+    /// `msg.set(ext.field(), value)`.
+    ///
+    /// The returned descriptor's
+    /// [`json_name()`](FieldDescriptor::json_name) is **not** the JSON key
+    /// for this extension — extensions serialize as the bracketed
+    /// [`full_name()`](Self::full_name) (`"[pkg.ext_name]"`), not as a
+    /// camelCase field name. A reflection-driven serializer must special-case
+    /// extension fields.
+    #[inline]
+    #[must_use]
+    pub fn field(&self) -> &FieldDescriptor {
+        &self.field
+    }
+
+    /// Fully-qualified registration name (the JSON `"[...]"` key without
+    /// the brackets).
+    #[inline]
+    #[must_use]
+    pub fn full_name(&self) -> &str {
+        &self.full_name
+    }
+
+    /// The JSON object key for this extension: the bracketed
+    /// [`full_name()`](Self::full_name), e.g. `"[pkg.ext_name]"`.
+    #[inline]
+    #[must_use]
+    pub fn json_key(&self) -> &str {
+        &self.json_key
+    }
+
+    /// The message this extension extends.
+    #[inline]
+    #[must_use]
+    pub fn extendee(&self) -> MessageIndex {
+        self.extendee
+    }
+}
+
+impl AsRef<FieldDescriptor> for ExtensionDescriptor {
+    /// Equivalent to [`field()`](Self::field), for generic code that accepts
+    /// "anything that is a field descriptor".
+    fn as_ref(&self) -> &FieldDescriptor {
+        &self.field
     }
 }
 
