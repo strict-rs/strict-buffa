@@ -950,7 +950,21 @@ fn generate_proto_content(
             &resolver,
         )?;
         owned.extend(owned_top);
-        let mod_ident = make_field_ident(&crate::oneof::to_snake_case(top_level_name));
+        let mod_name = ctx.nested_module_name(current_package, top_level_name);
+        let mod_ident = make_field_ident(&mod_name);
+        // When the nested-types module was deconflicted from a sub-package
+        // (issue #135), document why the name carries a trailing `_`.
+        let mod_doc = if mod_name == crate::oneof::to_snake_case(top_level_name) {
+            quote! {}
+        } else {
+            let doc = format!(
+                "Nested items of `{top_level_name}`. The module name carries a \
+                 trailing `_` to avoid a collision with another module in this \
+                 scope (a sub-package or sibling message of the same name). See \
+                 buffa#135."
+            );
+            quote! { #[doc = #doc] }
+        };
         for p in msg_reg.json_ext {
             reg.json_ext.push(quote! { #mod_ident :: #p });
         }
@@ -962,6 +976,7 @@ fn generate_proto_content(
 
         if !owned_mod.is_empty() {
             owned.extend(quote! {
+                #mod_doc
                 pub mod #mod_ident {
                     #[allow(unused_imports)]
                     use super::*;
@@ -1199,17 +1214,19 @@ fn surviving_root_reexports(
     use std::collections::BTreeSet;
 
     // Names already occupied at package root by real items: top-level
-    // messages, enums, message snake_case modules, and the `__buffa`
-    // sentinel itself. File-level extension consts live in
+    // messages, enums, message nested-types modules (deconflicted name, #135),
+    // and the `__buffa` sentinel itself. File-level extension consts live in
     // `__buffa::ext::`, not at the root, so they are *candidates* (added
     // by `generate_proto_content`) rather than occupants.
     let mut occupied: BTreeSet<String> = BTreeSet::new();
     occupied.insert(context::SENTINEL_MOD.to_string());
     for file in files {
+        let package = file.package.as_deref().unwrap_or("");
         for m in &file.message_type {
             let name = m.name.as_deref().unwrap_or("");
             occupied.insert(name.to_string());
-            occupied.insert(crate::oneof::to_snake_case(name));
+            // The actual module name (deconflicted from sub-packages, #135).
+            occupied.insert(ctx.nested_module_name(package, name));
         }
         for e in &file.enum_type {
             occupied.insert(e.name.as_deref().unwrap_or("").to_string());
