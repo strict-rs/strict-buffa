@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Unknown-field decode limit bounds decoder memory amplification.**
+  Unknown wire data can occupy ~20× more memory decoded than encoded:
+  every 2-byte unknown varint field materializes a ~40-byte
+  `UnknownField`, so a 64 MiB payload of minimal unknown fields (flat or
+  nested in a group) could force over 1 GiB of heap — not bounded by
+  `with_max_message_size`, which only caps input length. Decoding now
+  counts every materialized unknown field against a limit shared across
+  the whole decode call and fails with the new
+  `DecodeError::UnknownFieldLimitExceeded` when it is exceeded. The
+  default is 1,000,000 fields per decode (`DEFAULT_UNKNOWN_FIELD_LIMIT`),
+  capping slot overhead at ~40 MB, and applies to all decode entry points
+  including the trait-level convenience methods; tune it with
+  `DecodeOptions::with_unknown_field_limit`. Unknown length-delimited
+  payload bytes are not counted against the limit — the decoder only
+  allocates them once the sender has actually delivered the bytes, so
+  they are bounded by the input size and governed by
+  `with_max_message_size`. The limit covers owned-message and
+  `DynamicMessage` decoding; zero-copy views store unknown fields as
+  borrowed spans and are not affected by the amplification.
+
+### Changed
+
+- **Breaking:** the decode-path `Message` trait methods (`merge`,
+  `merge_field`, `merge_to_limit`, `merge_group`, `merge_length_delimited`),
+  `encoding::decode_unknown_field`, and `message_set::merge_item` now take a
+  `DecodeContext<'_>` — carrying the remaining recursion depth and the
+  shared unknown-field allowance — in place of the bare `depth: u32`. Code
+  generated with earlier releases must be regenerated. Callers of the
+  convenience methods (`decode`, `decode_from_slice`, `merge_from_slice`,
+  `DecodeOptions`) are unaffected.
+
 ## [0.7.1] - 2026-06-10
 
 This release is a patch bump under the

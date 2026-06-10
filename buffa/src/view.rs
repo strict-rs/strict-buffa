@@ -980,11 +980,13 @@ impl<'a> UnknownFieldsView<'a> {
     pub fn to_owned(&self) -> Result<crate::UnknownFields, crate::DecodeError> {
         use crate::encoding::{decode_unknown_field, Tag};
 
+        let limit = core::cell::Cell::new(crate::DEFAULT_UNKNOWN_FIELD_LIMIT);
+        let ctx = crate::DecodeContext::new(crate::RECURSION_LIMIT, &limit);
         let mut out = crate::UnknownFields::new();
         for span in &self.raw_spans {
             let mut cur: &[u8] = span;
             let tag = Tag::decode(&mut cur)?;
-            let field = decode_unknown_field(tag, &mut cur, crate::RECURSION_LIMIT)?;
+            let field = decode_unknown_field(tag, &mut cur, ctx)?;
             out.push(field);
         }
         Ok(out)
@@ -1872,7 +1874,7 @@ mod tests {
             &mut self,
             tag: crate::encoding::Tag,
             buf: &mut impl bytes::Buf,
-            _depth: u32,
+            _ctx: crate::DecodeContext<'_>,
         ) -> Result<(), DecodeError> {
             match tag.field_number() {
                 1 => self.id = crate::types::decode_int32(buf)?,
