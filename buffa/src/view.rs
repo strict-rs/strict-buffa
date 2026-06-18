@@ -230,6 +230,27 @@ pub trait ViewReborrow: MessageView<'static> {
     fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b>;
 }
 
+/// Implement [`ViewReborrow`] for a generated view type.
+///
+/// Emitted by generated code (one invocation per view struct); the trait's
+/// `on_unimplemented` note shows the equivalent expansion for hand-written
+/// views.
+///
+/// ```rust,ignore
+/// buffa::impl_view_reborrow!(MyMessageView);
+/// ```
+#[macro_export]
+macro_rules! impl_view_reborrow {
+    ($ty:ident) => {
+        impl $crate::ViewReborrow for $ty<'static> {
+            type Reborrowed<'b> = $ty<'b>;
+            fn reborrow<'b>(this: &'b Self) -> &'b Self::Reborrowed<'b> {
+                this
+            }
+        }
+    };
+}
+
 /// Links an owned message type to its generated zero-copy view types.
 ///
 /// For a message `Foo`, generated code implements this trait as
@@ -518,6 +539,36 @@ pub trait DefaultViewInstance {
     fn default_view_instance<'a>() -> &'a Self
     where
         Self: 'a;
+}
+
+/// Implement [`DefaultViewInstance`] for a generated view type via a
+/// lazily-initialized `OnceBox<FooView<'static>>` singleton.
+///
+/// Emitted by generated code (one invocation per view struct). The static
+/// holds the `'static` instantiation; returning it at any shorter `'a` is
+/// sound because view lifetimes are covariant.
+///
+/// ```rust,ignore
+/// buffa::impl_default_view_instance!(MyMessageView);
+/// ```
+#[macro_export]
+macro_rules! impl_default_view_instance {
+    ($ty:ident) => {
+        impl<'v> $crate::DefaultViewInstance for $ty<'v> {
+            fn default_view_instance<'a>() -> &'a Self
+            where
+                Self: 'a,
+            {
+                static VALUE: $crate::__private::OnceBox<$ty<'static>> =
+                    $crate::__private::OnceBox::new();
+                VALUE.get_or_init(|| {
+                    $crate::alloc::boxed::Box::new(
+                        <$ty<'static> as ::core::default::Default>::default(),
+                    )
+                })
+            }
+        }
+    };
 }
 
 /// A borrowed view of an optional message field.
@@ -2078,6 +2129,30 @@ mod tests {
                 crate::__private::OnceBox::new();
             INST.get_or_init(|| alloc::boxed::Box::new(<TinyView<'static>>::default()))
         }
+    }
+
+    /// A view type whose `DefaultViewInstance` impl comes from the exported
+    /// macro. The invocation doubles as the macro's unit test: it exercises
+    /// `$crate` path resolution and hygiene the same way generated code
+    /// invokes it from a downstream crate. (`impl_view_reborrow!` requires a
+    /// full `MessageView` impl, so it is covered by the generated view types
+    /// rather than a standalone fixture here.)
+    #[derive(Clone, Debug, Default, PartialEq)]
+    pub(super) struct MacroView<'a> {
+        pub value: &'a str,
+    }
+
+    crate::impl_default_view_instance!(MacroView);
+
+    #[test]
+    fn impl_default_view_instance_macro_returns_singleton() {
+        let a: &MacroView<'_> = MacroView::default_view_instance();
+        let b: &MacroView<'_> = MacroView::default_view_instance();
+        assert!(
+            core::ptr::eq(a, b),
+            "view singleton must be a single allocation"
+        );
+        assert_eq!(a, &MacroView::default());
     }
 
     #[test]
