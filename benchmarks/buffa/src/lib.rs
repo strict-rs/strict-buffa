@@ -1,13 +1,20 @@
-//! Generated protobuf types for buffa benchmarks.
-
+//! Generated protobuf types for buffa benchmarks (per-message isolated build).
+#[allow(clippy::all, non_camel_case_types, unused_imports, dead_code)]
 pub mod bench {
-    include!(concat!(env!("OUT_DIR"), "/bench_messages.rs"));
+    #[cfg(feature = "api_response")]
+    include!(concat!(env!("OUT_DIR"), "/api_response.rs"));
+    #[cfg(feature = "log_record")]
+    include!(concat!(env!("OUT_DIR"), "/log_record.rs"));
+    #[cfg(feature = "analytics_event")]
+    include!(concat!(env!("OUT_DIR"), "/analytics_event.rs"));
+    #[cfg(feature = "google_message1")]
+    include!(concat!(env!("OUT_DIR"), "/google_message1.rs"));
+    #[cfg(feature = "media_frame")]
+    include!(concat!(env!("OUT_DIR"), "/media_frame.rs"));
+    #[cfg(feature = "packed_tile")]
+    include!(concat!(env!("OUT_DIR"), "/packed_tile.rs"));
 }
-
+#[allow(clippy::all, non_camel_case_types, unused_imports, dead_code)]
 pub mod benchmarks {
     include!(concat!(env!("OUT_DIR"), "/benchmarks.rs"));
-}
-
-pub mod proto3 {
-    include!(concat!(env!("OUT_DIR"), "/benchmark_message1_proto3.rs"));
 }
