@@ -20,6 +20,41 @@ buffa-build = { path = "../../buffa-build" }
 [dev-dependencies]
 criterion = "0.5"
 
+[features]
+default = []
+api_response = []
+log_record = []
+analytics_event = []
+google_message1 = []
+media_frame = []
+packed_tile = []
+
 [[bench]]
-name = "protobuf"
+name = "api_response"
 harness = false
+required-features = ["api_response"]
+
+[[bench]]
+name = "log_record"
+harness = false
+required-features = ["log_record"]
+
+[[bench]]
+name = "analytics_event"
+harness = false
+required-features = ["analytics_event"]
+
+[[bench]]
+name = "google_message1"
+harness = false
+required-features = ["google_message1"]
+
+[[bench]]
+name = "media_frame"
+harness = false
+required-features = ["media_frame"]
+
+[[bench]]
+name = "packed_tile"
+harness = false
+required-features = ["packed_tile"]
