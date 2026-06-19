@@ -11,40 +11,40 @@ as noise unless they form a consistent pattern across many benchmarks.
 
 ## v0.7.1 — 2026-06-10
 
-Observed: a broad, consistent regression — median −3.3% across the 50 shared
-benchmarks, with 20 of them down more than 5%. Worst hit are the field-dense
-messages across both the decode *and* encode/build families: GoogleMessage1
-decode_view −17.5%, encode_view −13.4%, build_encode_view −13.2%, merge −12.0%;
-LogRecord encode_view −10.7%, encode −10.3%. `compute_size` (a tight leaf path,
-no backing allocation) is the lone unaffected family.
+As-measured in `runs/v0.7.1.json`: a broad, consistent-looking regression —
+median −3.3% across the 50 shared benchmarks, 20 down more than 5%, worst
+GoogleMessage1 decode_view −17.5%, encode_view −13.4%, merge −12.0%; LogRecord
+encode −10.3%. **Almost all of this turned out to be build-layout noise, not a
+code regression** (see below); the run file is kept as-measured, and this is the
+worked example of why the layout envelope matters.
 
-**Not run-position drift — but read it against the build-layout envelope.** Because
-v0.7.1 ran last in the main series, a follow-up interleaved re-measurement
-(v0.7.0, v0.7.1, v0.7.1, v0.7.0 on one box) was run. Each version measured within
-~0.1% of itself across its two positions, and v0.7.1 stayed ~the same amount
-below v0.7.0 regardless of order — so run position is ruled out. That experiment
-held the *binaries* fixed, so it does **not** rule out a build-layout effect: the
-benches build with the default `bench` profile (`codegen-units=16, lto=off`),
-because `benchmarks/buffa` is outside the root workspace and so does not inherit
-the root's `lto=true, codegen-units=1`. At 16 codegen units, adding unrelated
-code re-partitions functions and flips inline decisions at unit boundaries, which
-can move a dispatch-bound benchmark 10-20% with the measured code unchanged. The
-v0.7.1 delta must therefore be compared against the per-benchmark layout-noise
-envelope (see [README](README.md#layout-noise-envelope)) before it is called a
-code regression — and because this profile is not the optimized profile most
-consumers build with, a real consumer may not see it at all.
+Resolved: the broad regression is build-layout noise.
+- *Run position ruled out first:* an interleaved re-measurement (v0.7.0, v0.7.1,
+  v0.7.1, v0.7.0 on one box) had each version within ~0.1% of itself across
+  positions, so order was not the cause.
+- *Then a fresh rebuild dissolved it:* the benches build with the default `bench`
+  profile (`codegen-units=16, lto=off`) because `benchmarks/buffa` is outside the
+  root workspace. Rebuilding v0.7.0 and v0.7.1 from the same tags and re-running,
+  the v0.7.1-vs-v0.7.0 delta went from −3.3% to **+0.3% median** — the *same
+  source* measured differently because the fresh binaries have a different (and
+  not byte-identical) code layout. The v0.7.1 layout-noise envelope across builds
+  is **p50 5.84%, p90 15.11%, max 23.87%** (`layout_envelope.py` over the history,
+  cgu16, and cgu1 builds; see [README](README.md#layout-noise-envelope)), and the
+  whole broad deficit sits inside it. Because the optimized profile most consumers
+  build with (`lto=true, codegen-units=1`) is not even this profile, no consumer
+  would see this.
+- *One real signal survives:* GoogleMessage1 `decode_view` stays down ~−9 to −11%
+  across every build, including at `codegen-units=1`, the most stable layout
+  (v0.7.0 ≈ 795 MiB/s, v0.7.1 ≈ 715). That is a genuine eager-view decode
+  regression for that message, beyond the layout envelope, and is the one thing
+  worth chasing in v0.7.1.
 
-Cause (under investigation): the fingerprint is consistent with a **code-layout /
-codegen effect** rather than allocation. The two worst-hit messages have no packed
-varint fields (GoogleMessage1's only repeated field is `fixed64`, which reserves
-an exact count; LogRecord has only a `map`), and GoogleMessage1's payload is tiny
-(~289 B) so allocation volume is negligible — yet it regresses most, which fits a
-per-dispatch layout sensitivity rather than an allocation one. The leading
-hypothesis is that growth in the vtable-reflection generated code re-partitioned
-the 16 codegen units and shifted inline decisions on hot decode/encode paths. The
-layout-noise harness (and a `codegen-units=1` A/B) will show whether the delta
-survives once layout is controlled. (An earlier packed-varint over-reservation
-theory was not supported by the per-message field analysis above.)
+Lesson for this history: a single-build per-release delta below the ~15% p90
+layout envelope is not attributable to buffa's code. Treat the `runs/*.json`
+deltas accordingly, and for a real attribution either clear that envelope or
+measure the median of several `codegen-units` builds. (An earlier packed-varint
+over-reservation theory was unsupported — the worst-hit messages have no packed
+varint fields — though it did surface a separate, real allocation fix.)
 
 ## v0.7.0 — 2026-05-28
 
