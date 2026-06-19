@@ -2,21 +2,21 @@
 
 ## Goal
 
-This directory tracks how buffa's encode/decode performance has changed across releases, for every message shape we benchmark, in a way that is trustworthy (a movement reflects buffa's code, not measurement noise), attributable (we can say which release and which change moved a number), and reproducible (anyone can rebuild any data point). The headline metric is throughput in MiB/s, because it stays comparable even when a benchmark dataset changes size.
+This directory tracks how buffa's encode/decode performance has changed across releases, for every message shape we benchmark, in a way that is trustworthy (a movement reflects buffa's code, not measurement noise), attributable (we can say which release and which change moved a number), and reproducible (anyone can rebuild any data point). The headline metric is throughput in MiB/s — a rate (bytes decoded or encoded per second) rather than absolute time per iteration. A rate is the right choice for two reasons: it lets shapes whose payloads differ by orders of magnitude sit on one axis, and it stays meaningful if a shape's dataset is ever regenerated with a different number of payloads (the per-byte cost is what we are comparing, not the wall time of one dataset). What a rate does *not* do is make a changed proto *shape* comparable to its former self: altering a message's fields changes what is being decoded, so it is a new benchmark series, not a continuation of the old curve. The shapes and their datasets are therefore held fixed and canonical (see below); a release introducing a new shape adds a new series, it does not perturb existing ones.
 
 ## What we learned (why this is more than `cargo bench`)
 
 Most of the work here is not running benchmarks — it is removing sources of variance that are large enough to invent regressions that do not exist. We found these in order, each one a false signal we initially chased, and each one is now controlled:
 
-Machine noise. A shared or virtualised host cannot give stable absolute throughput. Runs happen on a dedicated bare-metal box with CPU turbo disabled, the `performance` governor, and the benchmark pinned to a physical core.
+*Machine noise*. A shared or virtualised host cannot give stable absolute throughput. Runs happen on a dedicated bare-metal box with CPU turbo disabled, the `performance` governor, and the benchmark pinned to a physical core.
 
-Run-position drift. We suspected the order benchmarks ran in mattered; an interleaved re-measurement showed each version measured within ~0.1% of itself regardless of position, ruling it out.
+*Run-position drift*. We suspected the order benchmarks ran in mattered; an interleaved re-measurement showed each version measured within ~0.1% of itself regardless of position, ruling it out.
 
-Build-layout noise. The single largest trap. The default `bench` profile is `codegen-units=16, lto=off`; at sixteen codegen units the partitioning of functions across units — and therefore which calls get inlined — shifts when unrelated code is added, moving a dispatch-bound benchmark 10–20% with the measured code unchanged. The same source measured −3.3% on one build and +0.3% on a fresh one. We pin `lto=true, codegen-units=1`.
+*Build-layout noise*. The single largest trap. The default `bench` profile is `codegen-units=16, lto=off`; at sixteen codegen units the partitioning of functions across units — and therefore which calls get inlined — shifts when unrelated code is added, moving a dispatch-bound benchmark 10–20% with the measured code unchanged. The same source measured −3.3% on one build and +0.3% on a fresh one. We pin `lto=true, codegen-units=1`.
 
-Compiler drift. Different toolchains generate different code. We pin one toolchain across the whole series, forced via `RUSTUP_TOOLCHAIN` so it does not depend on the working directory.
+*Compiler drift*. Different toolchains generate different code. We pin one toolchain across the whole series, forced via `RUSTUP_TOOLCHAIN` so it does not depend on the working directory.
 
-Cross-message inliner coupling. The subtlest. Every message's decoder compiles into one binary, so at `codegen-units=1` the inliner makes one global decision; adding a new benchmark message re-partitions inlining for the *other*, unchanged decoders. This is what made v0.7.1 look like a broad regression — it was the newly added `PackedTile` message perturbing the others, proven by disassembly (removing `PackedTile` made `MediaFrame`'s machine code byte-identical to v0.7.0). The fix is true per-message isolation: only the measured message is compiled.
+*Cross-message inliner coupling*. The subtlest. Every message's decoder compiles into one binary, so at `codegen-units=1` the inliner makes one global decision; adding a new benchmark message re-partitions inlining for the *other*, unchanged decoders. This is what made v0.7.1 look like a broad regression — it was the newly added `PackedTile` message perturbing the others, proven by disassembly (removing `PackedTile` made `MediaFrame`'s machine code byte-identical to v0.7.0). The fix is true per-message isolation: only the measured message is compiled.
 
 The lesson worth keeping: a per-message delta below roughly the 15% build-noise envelope is not attributable to buffa's code unless the build is pinned and the message is isolated.
 
@@ -44,15 +44,15 @@ The result is a capability matrix — operation by minimum release — measured 
 
 ### Build and measurement
 
-Every binary is built at the pinned toolchain and `lto=true, codegen-units=1`, isolated to one shape via the minimal FDS. Measurement runs on the quiesced metal box, and each benchmark is the median across several physical cores run concurrently (concurrency was measured to track the isolated single-core baseline within ~1% on this hardware, because the datasets fit private L2), with the per-benchmark spread recorded as a stability indicator.
+Every binary is built at the pinned toolchain and `lto=true, codegen-units=1`, isolated to one shape via the minimal FDS. Measurement runs on an AWS `metal` instance, to isolate from noisy neighbors and hypervisor behavior. Each benchmark is the median across several physical cores run concurrently — concurrency was measured to track the isolated single-core baseline within ~1% in this configuration, because the datasets fit private L2. The per-benchmark spread is recorded as a stability indicator.
 
 ### Data schema
 
-Each `runs/<version>.json` records the version, its commit and date, when it was measured, the toolchain, the criterion version, the build profile (including that it was per-message-isolated), the machine and tuning, and per benchmark id a `median_ns`, `throughput_mib_s`, `throughput_spread_pct`, and `samples`. These files are the source of truth; `REPORT.md` and `charts/` are generated from them.
+Each `runs/<version>.json` records the version, its commit and date, when it was measured, the toolchain, the criterion version, the build profile, the machine and tuning, and per-benchmark metrics: `median_ns`, `throughput_mib_s`, `throughput_spread_pct`, and `samples`. These files are the source of truth; `REPORT.md` and `charts/` are generated from them.
 
 ## Caveats
 
-The harness's source-compatibility across past versions is empirical and gated by build success, not promised for future versions. Regenerating a shape from a minimal FDS can in principle change second-order codegen context (name deconfliction, registry construction), but that does not touch the encode/decode hot path we time, so we accept it in exchange for isolation. A release that genuinely lacked an operation has no data point for it, by design. And there remains a roughly ±5% reproducibility floor even on quiesced metal — treat smaller movements as noise unless a later release confirms the trend.
+The harness's source-compatibility across past versions is empirical and gated by build success, not promised for future versions. Regenerating a shape from a minimal FDS can in principle change second-order codegen context (name deconfliction, registry construction), but that does not touch the encode/decode hot path we focus on, so we accept it in exchange for isolation. A release that genuinely lacked a benchmarked operation has no data point for it, by design. There still remains a roughly ±5% reproducibility floor even on a bare-metal instance — treat smaller movements as noise unless a later release confirms the trend.
 
 ## Implementation stages
 
