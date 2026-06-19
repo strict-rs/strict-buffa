@@ -11,24 +11,31 @@ as noise unless they form a consistent pattern across many benchmarks.
 
 ## v0.7.1 — 2026-06-10
 
-Likely perf-relevant changes:
-- Lazy view decoding does one non-recursive scan and no longer recurses into
-  untouched sub-trees. This benchmark set exercises *eager* views
-  (`*/decode_view`), not the lazy view, so the headline lazy-view win is not
-  directly visible here.
-- `decode_length_delimited_reader` no longer pre-allocates the wire-declared
-  length; the read buffer grows as bytes arrive.
-- Packed repeated view decoders pre-allocate `RepeatedView` capacity.
+Observed: a broad, consistent regression — median −3.3% across the 50 shared
+benchmarks, with 20 of them down more than 5%. Worst hit are the field-dense
+messages across both the decode *and* encode/build families: GoogleMessage1
+decode_view −17.5%, encode_view −13.4%, build_encode_view −13.2%, merge −12.0%;
+LogRecord encode_view −10.7%, encode −10.3%. `compute_size` (a tight leaf path,
+no backing allocation) is the lone unaffected family.
 
-Observed: a broad, consistent regression of roughly 5-12% across binary decode,
-encode, merge, and the view paths (e.g. GoogleMessage1 decode −9%, merge −12%,
-encode_view −12%, decode_view −18%; LogRecord encode −11%). Notably,
-`compute_size` — the one path that does no allocation — did **not** move, which
-argues this is a real effect on the allocate/copy paths rather than measurement
-drift. **Flagged for confirmation:** v0.7.1 ran last on the box, so a
-re-measurement with different ordering should confirm before treating this as
-settled. The incremental-allocation change to the reader path is the leading
-suspect for the decode/merge component.
+**Confirmed real, not measurement drift.** Because v0.7.1 ran last in the main
+series, a follow-up interleaved re-measurement (v0.7.0, v0.7.1, v0.7.1, v0.7.0
+on one box) was run. Each version measured within ~0.1% of itself across its two
+positions, and v0.7.1 stayed ~the same amount below v0.7.0 regardless of order —
+so run position is not the cause. All builds use buffa's release profile
+(`lto = true, codegen-units = 1`, inherited by the `bench` profile), so this is
+also what a downstream release build of v0.7.1 gets.
+
+Cause (under investigation): the fingerprint points at a **code-generation /
+code-size effect**, not allocation. The two worst-hit messages have no packed
+varint fields (GoogleMessage1's only repeated field is `fixed64`, which reserves
+an exact count; LogRecord has only a `map`), and GoogleMessage1's payload is tiny
+(~289 B) so allocation volume is negligible — yet it regresses most, which fits a
+per-field/per-dispatch code-layout regression rather than an allocation one. The
+leading hypothesis is that growth in the vtable-reflection generated code pushed
+hot decode/encode paths past inlining thresholds under fat LTO. (An earlier
+packed-varint over-reservation theory was not supported by the per-message field
+analysis above.)
 
 ## v0.7.0 — 2026-05-28
 
