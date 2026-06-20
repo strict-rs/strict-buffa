@@ -14,7 +14,11 @@ share the benchmark binary. The charts shade a **±5% band** around each message
 baseline: that is the measured run-to-run noise floor on this hardware (median
 core-to-core spread 2.6%, p90 6.6% across all 336 benchmarks), so a line that
 stays inside the band never moved beyond noise. Movements that clear it are
-discussed below.
+discussed below. Spread is uneven across operations — `compute_size` is the
+tightest (p90 2.7%), the binary-`encode` and JSON paths the noisiest (p90 ~9–10%)
+— so the per-operation summary in [REPORT.md](REPORT.md)'s "Measurement spread"
+table, and the per-benchmark spread in `runs/*.json`, are where to check how far
+a given number can be trusted, rather than reading it off the chart.
 
 ## Headline cross-release findings (v0.1.0 → v0.7.1)
 

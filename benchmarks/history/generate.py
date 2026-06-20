@@ -217,6 +217,40 @@ def render_report(runs: list[dict], matrix: dict[tuple[str, str], dict[str, floa
         w(f"![{op_disp}](charts/{op}.svg)")
         w("")
 
+    # Measurement spread per operation — how noisy each op's numbers are, so the
+    # tables and charts above are read with the right caution. The charts shade a
+    # ±5% noise floor; an operation whose spread routinely exceeds it needs a
+    # larger move before it is meaningful. Full per-benchmark spread (and sample
+    # count) is in runs/*.json; this is the per-op summary over all messages and
+    # releases.
+    op_spreads: dict[str, list[float]] = {}
+    for run in runs:
+        for bench_id, stats in run["benchmarks"].items():
+            mo = split_id(bench_id)
+            sp = stats.get("throughput_spread_pct")
+            if mo is not None and sp is not None:
+                op_spreads.setdefault(mo[1], []).append(sp)
+
+    def pctile(xs: list[float], q: float) -> float:
+        s = sorted(xs)
+        return s[min(len(s) - 1, int(q * len(s)))]
+
+    if op_spreads:
+        w("## Measurement spread (core-to-core)")
+        w("")
+        w("Spread of the per-benchmark median across cores, summarised per operation")
+        w("over all messages and releases. A delta in the tables above smaller than")
+        w("the operation's spread here is noise, not signal.")
+        w("")
+        w("| Operation | Median spread | p90 spread | Max |")
+        w("|-----------|--------------:|-----------:|----:|")
+        for op, op_disp in OPS:
+            xs = op_spreads.get(op)
+            if not xs:
+                continue
+            w(f"| {op_disp} | {pctile(xs, 0.5):.1f}% | {pctile(xs, 0.9):.1f}% | {max(xs):.1f}% |")
+        w("")
+
     while out and out[-1] == "":
         out.pop()  # avoid a trailing blank line (markdownlint MD012)
     return "\n".join(out) + "\n"

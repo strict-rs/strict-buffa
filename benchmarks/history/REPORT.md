@@ -132,3 +132,19 @@ All throughput values are MiB/s; higher is better.
 | PackedTile | 194 | 198 (+2%) | 193 (−3%) | 189 (−2%) | 190 (+1%) | 189 (−0%) | 190 (+0%) | 192 (+1%) |
 
 ![JSON decode](charts/json_decode.svg)
+
+## Measurement spread (core-to-core)
+
+Spread of the per-benchmark median across cores, summarised per operation
+over all messages and releases. A delta in the tables above smaller than
+the operation's spread here is noise, not signal.
+
+| Operation | Median spread | p90 spread | Max |
+|-----------|--------------:|-----------:|----:|
+| Binary decode | 1.9% | 6.8% | 24.1% |
+| Merge into existing | 2.9% | 6.6% | 26.5% |
+| Binary encode | 3.7% | 10.4% | 22.5% |
+| Compute size | 1.8% | 2.7% | 3.4% |
+| View decode | 2.8% | 6.3% | 6.5% |
+| JSON encode | 2.4% | 8.8% | 11.4% |
+| JSON decode | 3.1% | 6.2% | 19.1% |
