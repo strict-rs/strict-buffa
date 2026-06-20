@@ -63,8 +63,12 @@ each run file records it in `build_profile`.
   looks surprising, check whether that benchmark's source changed at that tag
   before attributing it to the library.
 - **There is a reproducibility floor of roughly ±5%** even on a quiesced machine,
-  from residual scheduler and thermal effects. Treat sub-5% movements as noise
-  unless a later release confirms the trend.
+  from residual scheduler and thermal effects. The measured core-to-core spread
+  across all 336 benchmarks is p50 2.6% / p90 6.6%, and increasing the sample
+  count (4 → 15 cores) tightened the *medians* but not this floor — it is
+  systematic, not sampling noise. The charts shade a ±5% band around each
+  message's baseline for exactly this reason: treat movement that stays inside it
+  as noise unless a later release confirms the trend.
 - **Build-layout noise is controlled by the profile, not eliminated.** Building at
   `codegen-units=1` removes the codegen-unit-partitioning instability that
   dominates the default `bench` profile (measured there at p50 5.8% / p90 15% /

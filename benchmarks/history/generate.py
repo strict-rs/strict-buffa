@@ -31,6 +31,12 @@ from xml.sax.saxutils import escape
 
 MINUS = "−"  # U+2212 MINUS SIGN, matching benchmarks/charts/tables.md.
 
+# Half-width (percent) of the shaded "noise floor" band drawn around each
+# message's 100% baseline on the charts. A line that stays inside the band never
+# moved beyond the bare-metal run-to-run reproducibility floor, so its change is
+# not consequential. Sized to the measured median spread of the run series.
+NOISE_BAND_PCT = 5.0
+
 # Stable display order + colours for the message types (a line each per chart).
 MESSAGES = [
     ("api_response", "ApiResponse", "#4C78A8"),
@@ -290,8 +296,20 @@ def render_chart(op: str, op_disp: str, versions: list[str],
     a('    .legend-text { font-size: 12px; fill: #24292f; }')
     a('    .grid { stroke: #d0d7de; stroke-width: 0.5; }')
     a('    .baseline { stroke: #8c959f; stroke-width: 1; stroke-dasharray: 4 3; }')
+    a('    .noise-band { fill: #b1bac4; opacity: 0.18; }')
+    a('    .band-label { font-size: 10px; fill: #8c959f; }')
     a('  </style>')
     a('  <rect width="100%" height="100%" fill="white"/>')
+    # Shaded ±NOISE_BAND_PCT band around the 100% baseline (the reproducibility
+    # floor), drawn behind the gridlines and series so sub-floor wiggles read as
+    # noise. Clamped to the plot area in case the band exceeds the axis range.
+    band_top = max(top, py(100.0 + NOISE_BAND_PCT))
+    band_bot = min(top + plot_h, py(100.0 - NOISE_BAND_PCT))
+    if band_bot > band_top:
+        a(f'  <rect x="{left}" y="{band_top:.1f}" width="{plot_w}"'
+          f' height="{band_bot - band_top:.1f}" class="noise-band"/>')
+        a(f'  <text x="{left + plot_w - 4}" y="{(band_top + band_bot) / 2 + 3:.1f}"'
+          f' text-anchor="end" class="band-label">±{NOISE_BAND_PCT:.0f}% noise</text>')
     a(f'  <text x="{left + plot_w / 2}" y="26" text-anchor="middle" class="title">'
       f'{escape(op_disp)} — throughput vs each message’s first release (%)</text>')
 
