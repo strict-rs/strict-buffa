@@ -33,7 +33,20 @@ releases. Two findings stand, both now sitting on clean, flat baselines:
   down at v0.4.0 (encode 468→414, compute_size 1379→1262 MiB/s) that holds flat
   through v0.7.1. `compute_size` is the tightest operation and corroborates the
   `encode` figure, so the deeply nested, repeated-submessage shape genuinely lost
-  ground on the owned encode/size paths — the one result worth investigating.
+  ground on the owned encode/size paths.
+
+  **Root-caused** (follow-up investigation): the v0.4.0 size-cache externalization
+  (`c1fdbe14`, #22 — "remove `__buffa_cached_size` from generated structs") makes
+  `encode` / `encoded_len` build a fresh `SizeCache` per call — an inline
+  `[u32; 16]` with a `Vec` spill. AnalyticsEvent has more than 16 nested
+  length-delimited sub-messages, so every call overflows the inline cap and grows a
+  fresh spill `Vec` (several allocations per message); the pre-v0.4.0 in-struct
+  atomic cached size allocated nothing. The flatter shapes (ApiResponse, LogRecord)
+  fit within 16, which is why they did not regress, and `encode` and `compute_size`
+  move together because they share the cache. Roughly half the step is recoverable
+  spill-allocation overhead (reserve on first spill); the rest is the structural
+  cost of an external cache array versus the former in-struct atomic. A fix is
+  proposed; the land/accept decision is pending.
 - **PackedTile `decode_view` +47% at v0.7.1** — flat (~175 MiB/s) from v0.1.0
   through v0.7.0, then a single-release jump to ~257 at v0.7.1, consistent with the
   packed-varint reserve work in that release. A 47% step is well clear of noise; but
