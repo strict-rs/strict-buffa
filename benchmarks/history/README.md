@@ -53,6 +53,19 @@ the root's profile does not reach it, so the profile is applied via
 `CARGO_PROFILE_BENCH_LTO=true CARGO_PROFILE_BENCH_CODEGEN_UNITS=1` at build time;
 each run file records it in `build_profile`.
 
+**Layout normalization.** On top of the profile, every binary is built with
+**64-byte block alignment** (`RUSTFLAGS="-Cllvm-args=-align-all-nofallthru-blocks=6"`).
+Without it, final function and loop placement is a lottery: rebuilding the identical
+source in a different directory can move a hot loop ~20% with byte-identical machine
+code, worst on the serde JSON path (a µop-cache / DSB effect, measured with `perf
+stat` — see `annotations.md`). Aligning hot block heads to the cache line lands every
+build on the fast layout, which collapsed the cross-release spread (`json_encode` 19%
+→ 2.5%, overall 5.9% → 4.2%) while leaving the real code-driven steps untouched. The
+trade-off is that the curves show a *best-achievable* layout — the one a
+profile-guided build (or BOLT) would reach — not what a plain `cargo build` ships;
+that is the right frame for "did buffa's code get faster," and the wrong one for
+"what will my service see." See the caveat below.
+
 ## Comparability caveats
 
 - **The harness and datasets evolved with the library.** Toolchain, profile, and
@@ -63,12 +76,13 @@ each run file records it in `build_profile`.
   looks surprising, check whether that benchmark's source changed at that tag
   before attributing it to the library.
 - **There is a reproducibility floor of roughly ±5%** even on a quiesced machine,
-  from residual scheduler and thermal effects. The measured core-to-core spread
-  across all 336 benchmarks is p50 2.6% / p90 6.6%, and increasing the sample
-  count (4 → 15 cores) tightened the *medians* but not this floor — it is
-  systematic, not sampling noise. The charts shade a ±5% band around each
-  message's baseline for exactly this reason: treat movement that stays inside it
-  as noise unless a later release confirms the trend.
+  from residual scheduler and thermal effects. With 32 self-concurrent cores per
+  release the measured core-to-core spread across all 336 benchmarks is p50 ~3.6% /
+  p90 ~9.4% (a few points higher than at lower concurrency, but the per-release
+  *median* stays robust); this floor is systematic, not sampling noise. The charts
+  shade a ±5% band around each message's baseline against the per-release medians,
+  whose cross-release spread is ~4% after layout normalization: treat movement that
+  stays inside the band as noise unless a later release confirms the trend.
 - **Build-layout noise is controlled by the profile, not eliminated.** Building at
   `codegen-units=1` removes the codegen-unit-partitioning instability that
   dominates the default `bench` profile (measured there at p50 5.8% / p90 15% /
@@ -78,18 +92,19 @@ each run file records it in `build_profile`.
   layout-noise harness below still exists to *verify* the floor on a quiesced box;
   a surprising delta should clear the measured envelope before being attributed to
   the library.
-- **A residual per-build layout lottery remains, worst on the JSON path.**
-  `codegen-units=1` removes the *partitioning* instability above, but final
-  function placement still shifts with trivial inputs — a one-line source change
-  between releases, or even rebuilding the identical commit in a different
-  directory, can move a hot loop ~24% with byte-identical machine code (proven by
-  disassembly; see `annotations.md`). It is build-determined, not
-  measurement-determined: the same binary gives the same number whether measured
-  isolated or in parallel. So **for the layout-sensitive operations the trust
-  threshold is ±20%, not ±5%**, and `json_encode` / `json_decode` — the most
-  fragile — are **demoted** in `REPORT.md` to a directional-only section with no
-  charts; the stable operations (`compute_size`, `decode`, `merge`, `decode_view`)
-  keep the ±5% band.
+- **Layout is normalized, so the curves are best-achievable, not as-shipped.**
+  `codegen-units=1` removes the *partitioning* instability above, but final function
+  placement still shifts with trivial inputs — a one-line source change between
+  releases, or even rebuilding the identical commit in a different directory, can move
+  a hot loop ~20% with byte-identical machine code (proven by disassembly; the serde
+  JSON path is worst, a µop-cache / DSB effect — see `annotations.md`). Rather than
+  live with that, every binary is built with 64-byte block alignment (above), which
+  lands each build on the fast layout: it collapsed the cross-release spread
+  (`json_encode` 19% → 2.5%, overall 5.9% → 4.2%) while leaving the real code-driven
+  steps (the AnalyticsEvent v0.4.0 regression, the PackedTile v0.7.1 jump) untouched,
+  so `json_encode` / `json_decode` are trustworthy again and charted like every other
+  operation. The trade-off is the frame: these are the layout a profile-guided build
+  would reach, not the lower, noisier number a default `cargo build` ships.
 - **Cross-message inliner coupling — resolved by per-message isolation.** If all
   message decoders share one binary, rustc's inlining is a global decision and
   adding a message reshuffles inlining for the *unchanged* decoders (worst at
@@ -184,9 +199,14 @@ All releases share one toolchain and profile, so adding a release means matching
    cd benchmarks/buffa
    for m in api_response log_record analytics_event google_message1 media_frame packed_tile; do
      RUSTUP_TOOLCHAIN=1.96.0 CARGO_PROFILE_BENCH_LTO=true CARGO_PROFILE_BENCH_CODEGEN_UNITS=1 \
+       RUSTFLAGS="-Cllvm-args=-align-all-nofallthru-blocks=6" \
        cargo bench --no-default-features --features "iso,$m" --bench "$m" --no-run
    done
    ```
+
+   The `RUSTFLAGS` block-alignment flag is required, not optional — it is what
+   normalizes the layout (above). Omitting it reintroduces the per-build lottery and
+   the numbers will not be comparable to the rest of the series.
 
    (`task bench-iso -- <message>` is the convenience wrapper for one shape.)
 
@@ -201,7 +221,8 @@ All releases share one toolchain and profile, so adding a release means matching
      --commit $(git rev-parse <version>) \
      --commit-date "$(git log -1 --format=%cI <version>)" \
      --measured-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-     --toolchain 1.96.0 --profile "lto=true, codegen-units=1, per-message-isolated" \
+     --toolchain 1.96.0 \
+     --profile "lto=true, codegen-units=1, per-message-isolated, 64-byte block-aligned (-align-all-nofallthru-blocks=6)" \
      --out benchmarks/history/runs/<version>.json
    ```
 

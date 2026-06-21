@@ -65,12 +65,12 @@ OPS = [
 ]
 OP_DISPLAY = dict(OPS)
 
-# Operations dominated by build-time code layout (the serde JSON path): a rebuild
-# of the identical source can move them ~20% with no code change (proven by
-# disassembly — see annotations.md). Demoted from the charts, the biggest-movers
-# table, and the main throughput tables; kept only in a flagged "directional
-# only" section and the spread table.
-DEMOTED_OPS = {"json_encode", "json_decode"}
+# Operations to demote from charts/movers/main tables (kept only in a flagged
+# "directional only" section + the spread table). Empty now: layout normalization
+# (64-byte block alignment, -align-all-nofallthru-blocks=6) flattened the JSON
+# µop-cache lottery — json_encode's cross-version spread dropped 19% -> 2.5% — so
+# it is trustworthy again. Kept parameterized for any future layout-fragile op.
+DEMOTED_OPS: set[str] = set()
 
 
 def semver_key(version: str) -> tuple[int, ...]:
