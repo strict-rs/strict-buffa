@@ -65,6 +65,13 @@ OPS = [
 ]
 OP_DISPLAY = dict(OPS)
 
+# Operations dominated by build-time code layout (the serde JSON path): a rebuild
+# of the identical source can move them ~20% with no code change (proven by
+# disassembly — see annotations.md). Demoted from the charts, the biggest-movers
+# table, and the main throughput tables; kept only in a flagged "directional
+# only" section and the spread table.
+DEMOTED_OPS = {"json_encode", "json_decode"}
+
 
 def semver_key(version: str) -> tuple[int, ...]:
     nums = re.findall(r"\d+", version)
@@ -161,6 +168,8 @@ def render_report(runs: list[dict], matrix: dict[tuple[str, str], dict[str, floa
     # Biggest movers across each benchmark's tracked range (first → latest).
     movers: list[tuple[float, str, str, float, float, str, str]] = []
     for (msg, op), by_ver in matrix.items():
+        if op in DEMOTED_OPS:
+            continue
         present = [(v, by_ver[v]) for v in versions if v in by_ver]
         if len(present) < 2:
             continue
@@ -189,6 +198,8 @@ def render_report(runs: list[dict], matrix: dict[tuple[str, str], dict[str, floa
     w("## Throughput by operation (MiB/s)")
     w("")
     for op, op_disp in OPS:
+        if op in DEMOTED_OPS:
+            continue
         rows = sorted(
             ((msg, by_ver) for (msg, o), by_ver in matrix.items() if o == op),
             key=lambda r: MSG_ORDER.get(r[0], 99),
@@ -216,6 +227,44 @@ def render_report(runs: list[dict], matrix: dict[tuple[str, str], dict[str, floa
                     cells.append("—")
             w(f"| {MSG_DISPLAY.get(msg, msg)} | " + " | ".join(cells) + " |")
         w("")
+
+    # JSON operations: demoted to a directional-only section (layout-dominated).
+    demoted = [(op, d) for op, d in OPS
+               if op in DEMOTED_OPS and any(o == op for (_, o) in matrix)]
+    if demoted:
+        w("## JSON operations — directional only")
+        w("")
+        w("These numbers are **not trustworthy to ~20%**: the JSON serialize /")
+        w("deserialize path through serde is dominated by build-time code layout,")
+        w("which a rebuild of the identical source can shift by that much with no")
+        w("code change (proven by disassembly — see [annotations.md](annotations.md)).")
+        w("No charts are drawn and they are excluded from the biggest-movers table.")
+        w("Trust only large, persistent steps; treat anything within ±20% of a")
+        w("baseline as build noise.")
+        w("")
+        for op, op_disp in demoted:
+            rows = sorted(
+                ((msg, by_ver) for (msg, o), by_ver in matrix.items() if o == op),
+                key=lambda r: MSG_ORDER.get(r[0], 99),
+            )
+            if not rows:
+                continue
+            w(f"### {op_disp}")
+            w("")
+            w("| Message | " + " | ".join(versions) + " |")
+            w("|---------|" + "|".join(["------:"] * len(versions)) + "|")
+            for msg, by_ver in rows:
+                cells = []
+                prev: float | None = None
+                for v in versions:
+                    if v in by_ver:
+                        cur = by_ver[v]
+                        cells.append(fmt_thr(cur) + fmt_delta(cur, prev))
+                        prev = cur
+                    else:
+                        cells.append("—")
+                w(f"| {MSG_DISPLAY.get(msg, msg)} | " + " | ".join(cells) + " |")
+            w("")
 
     # Measurement spread per operation — how noisy each op's numbers are, so the
     # tables and charts above are read with the right caution. The charts shade a
@@ -400,6 +449,8 @@ def main(argv: list[str]) -> int:
     charts_dir.mkdir(exist_ok=True)
     n_charts = 0
     for op, op_disp in OPS:
+        if op in DEMOTED_OPS:
+            continue
         svg = render_chart(op, op_disp, versions, matrix)
         if svg is not None:
             (charts_dir / f"{op}.svg").write_text(svg, encoding="utf-8")

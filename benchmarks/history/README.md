@@ -78,6 +78,18 @@ each run file records it in `build_profile`.
   layout-noise harness below still exists to *verify* the floor on a quiesced box;
   a surprising delta should clear the measured envelope before being attributed to
   the library.
+- **A residual per-build layout lottery remains, worst on the JSON path.**
+  `codegen-units=1` removes the *partitioning* instability above, but final
+  function placement still shifts with trivial inputs — a one-line source change
+  between releases, or even rebuilding the identical commit in a different
+  directory, can move a hot loop ~24% with byte-identical machine code (proven by
+  disassembly; see `annotations.md`). It is build-determined, not
+  measurement-determined: the same binary gives the same number whether measured
+  isolated or in parallel. So **for the layout-sensitive operations the trust
+  threshold is ±20%, not ±5%**, and `json_encode` / `json_decode` — the most
+  fragile — are **demoted** in `REPORT.md` to a directional-only section with no
+  charts; the stable operations (`compute_size`, `decode`, `merge`, `decode_view`)
+  keep the ±5% band.
 - **Cross-message inliner coupling — resolved by per-message isolation.** If all
   message decoders share one binary, rustc's inlining is a global decision and
   adding a message reshuffles inlining for the *unchanged* decoders (worst at

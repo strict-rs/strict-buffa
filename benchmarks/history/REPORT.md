@@ -22,21 +22,21 @@ dataset changed size. See [README.md](README.md) for methodology and caveats.
 | Benchmark | First | Latest | Change | Range |
 |-----------|------:|-------:|-------:|-------|
 | PackedTile / decode_view | 172 | 246 | +43% | v0.1.0→v0.7.1 |
-| MediaFrame / json_encode | 700 | 982 | +40% | v0.1.0→v0.7.1 |
 | ApiResponse / decode_view | 955 | 1,051 | +10% | v0.1.0→v0.7.1 |
 | AnalyticsEvent / merge | 142 | 156 | +10% | v0.1.0→v0.7.1 |
 | LogRecord / decode_view | 1,307 | 1,383 | +6% | v0.1.0→v0.7.1 |
 | ApiResponse / merge | 737 | 773 | +5% | v0.1.0→v0.7.1 |
 | GoogleMessage1 / encode | 2,048 | 2,119 | +3% | v0.1.0→v0.7.1 |
 | LogRecord / encode | 3,048 | 3,124 | +2% | v0.1.0→v0.7.1 |
+| LogRecord / decode | 469 | 480 | +2% | v0.1.0→v0.7.1 |
 | AnalyticsEvent / encode | 465 | 399 | −14% | v0.1.0→v0.7.1 |
 | AnalyticsEvent / compute_size | 1,398 | 1,264 | −10% | v0.1.0→v0.7.1 |
 | GoogleMessage1 / merge | 806 | 736 | −9% | v0.1.0→v0.7.1 |
-| AnalyticsEvent / json_encode | 528 | 493 | −7% | v0.1.0→v0.7.1 |
 | ApiResponse / compute_size | 7,989 | 7,499 | −6% | v0.1.0→v0.7.1 |
-| PackedTile / json_encode | 388 | 365 | −6% | v0.1.0→v0.7.1 |
 | PackedTile / decode | 226 | 216 | −5% | v0.1.0→v0.7.1 |
 | GoogleMessage1 / decode_view | 828 | 798 | −4% | v0.1.0→v0.7.1 |
+| MediaFrame / merge | 15,579 | 15,056 | −3% | v0.1.0→v0.7.1 |
+| GoogleMessage1 / compute_size | 4,804 | 4,664 | −3% | v0.1.0→v0.7.1 |
 
 All throughput values are MiB/s; higher is better.
 
@@ -107,9 +107,17 @@ All throughput values are MiB/s; higher is better.
 | MediaFrame | 43,950 | 44,730 (+2%) | 48,472 (+8%) | 44,892 (−7%) | 48,290 (+8%) | 46,683 (−3%) | 46,281 (−1%) | 43,964 (−5%) |
 | PackedTile | 172 | 174 (+1%) | 170 (−2%) | 174 (+3%) | 170 (−3%) | 170 (+0%) | 170 (−0%) | 246 (+45%) |
 
-### JSON encode
+## JSON operations — directional only
 
-![JSON encode](charts/json_encode.svg)
+These numbers are **not trustworthy to ~20%**: the JSON serialize /
+deserialize path through serde is dominated by build-time code layout,
+which a rebuild of the identical source can shift by that much with no
+code change (proven by disassembly — see [annotations.md](annotations.md)).
+No charts are drawn and they are excluded from the biggest-movers table.
+Trust only large, persistent steps; treat anything within ±20% of a
+baseline as build noise.
+
+### JSON encode
 
 | Message | v0.1.0 | v0.2.0 | v0.3.0 | v0.4.0 | v0.5.0 | v0.6.0 | v0.7.0 | v0.7.1 |
 |---------|------:|------:|------:|------:|------:|------:|------:|------:|
@@ -121,8 +129,6 @@ All throughput values are MiB/s; higher is better.
 | PackedTile | 388 | 378 (−3%) | 377 (−0%) | 365 (−3%) | 366 (+0%) | 364 (−0%) | 364 (−0%) | 365 (+0%) |
 
 ### JSON decode
-
-![JSON decode](charts/json_decode.svg)
 
 | Message | v0.1.0 | v0.2.0 | v0.3.0 | v0.4.0 | v0.5.0 | v0.6.0 | v0.7.0 | v0.7.1 |
 |---------|------:|------:|------:|------:|------:|------:|------:|------:|
