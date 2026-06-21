@@ -89,16 +89,25 @@ What this means for reading the history:
   `json_decode` are layout-dominated and are **demoted** — no charts, kept only in
   REPORT.md's "directional only" section. The "Measurement spread" table ranks all
   of them.
-- **Why JSON is the worst.** Most likely because the serde serialize / deserialize
-  path is a deep tree of small generic functions (string escaping, integer/float
-  formatting) that monomorphise and inline differently with every layout shift,
-  whereas binary decode is a flatter, more self-contained loop. Whether the root
-  is serde's structure or our `benchmark_json` helper, it is the most
-  layout-fragile thing we measure.
+- **Why JSON is the worst — measured, not guessed.** `perf stat` on a slow vs a
+  64-byte-aligned build of the *same* code (IPC 2.87 vs 3.55) traces the penalty to
+  the **µop cache (DSB)**, not the instruction cache. The Topdown breakdown puts the
+  slow layout's stall in Fetch *Bandwidth* (21.7% of slots vs 11.5%), with ~2× the
+  DSB→legacy-decoder (MITE) switch penalty (`dsb2mite_switches.penalty_cycles`),
+  while Fetch *Latency* and the i-cache / cache-line miss counters barely move. The
+  serde serialize path is a dense tree of many small functions (string escaping,
+  int/float formatting), so its hot loop is unusually sensitive to how the µop cache
+  packs it: a placement shift tips it out of the DSB into the slower legacy decoder.
+  (An earlier "cache-line" reading was wrong — the counters say front-end
+  *bandwidth*, not *latency*.)
 
-Eliminating this would mean averaging over many build layouts per cell (BOLT-style,
-or many rebuilds) — not worth it. So treat this history as a reliable detector of
-**large, persistent** shifts on the stable operations, and nothing finer.
+Two things *do* converge the fast layout: 64-byte block alignment
+(`-align-all-nofallthru-blocks=6`) and a BOLT pass — both restore clean DSB delivery
+and pull the slow ~51 µs builds back to ~37 µs (BOLT even with a no-LBR profile). We
+apply neither, because each measures a *best-achievable* layout rather than what a
+plain `cargo build` ships, and the stable operations don't need it. So treat this
+history as a reliable detector of **large, persistent** shifts on the stable
+operations, and nothing finer.
 
 ## Why this replaced the earlier (sparse, coupled) history
 
