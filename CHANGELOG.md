@@ -349,6 +349,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **Extension JSON serialization no longer scans previously seen unknown-field
+  numbers linearly for every record.** The serialize-side extension registry
+  still emits each registered extension at most once in first-seen unknown-field
+  order, but duplicate detection now uses a set instead of a `Vec`, avoiding
+  quadratic work for messages with many distinct unknown field numbers.
 - **`extern_path` references to nested types now use the owning crate's
   deconflicted module name** (#232). When the owning crate renames a
   message's nested-types module to avoid colliding with a sibling sub-package
